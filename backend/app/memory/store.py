@@ -99,6 +99,21 @@ class MemoryStore:
         conn.close()
         return [dict(r) for r in rows]
 
+    def delete_session(self, session_id: str) -> bool:
+        conn = self._conn()
+        conn.execute("DELETE FROM episodic_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+        # Also remove from ChromaDB episodic collection
+        try:
+            results = self._episodic_col.get(where={"session_id": session_id})
+            if results and results["ids"]:
+                self._episodic_col.delete(ids=results["ids"])
+        except Exception:
+            pass
+        return True
+
     def get_session_history(self, session_id: str) -> list[dict]:
         conn = self._conn()
         rows = conn.execute(

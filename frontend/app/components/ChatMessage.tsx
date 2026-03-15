@@ -1,15 +1,30 @@
 "use client";
 
+import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../hooks/useChat";
+import { useTypewriter } from "../hooks/useTypewriter";
+import SourcesList, { extractSources } from "./SourcesList";
 
 interface ChatMessageProps {
   message: Message;
+  streaming?: boolean;
 }
 
-export default function ChatMessage({ message }: ChatMessageProps) {
+export default function ChatMessage({ message, streaming = false }: ChatMessageProps) {
   const isUser = message.role === "user";
+
+  // Extract sources from assistant messages for separate rendering
+  const { sources, contentWithoutSources } = useMemo(() => {
+    if (isUser || !message.content) return { sources: [], contentWithoutSources: message.content };
+    return extractSources(message.content);
+  }, [message.content, isUser]);
+
+  const displayContent = useTypewriter(
+    sources.length > 0 ? contentWithoutSources : message.content,
+    streaming && !isUser,
+  );
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
@@ -20,10 +35,11 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             : "bg-zinc-800 text-zinc-100 border border-zinc-700"
         }`}
       >
-        {message.content ? (
+        {displayContent ? (
           isUser ? (
-            <div className="text-sm leading-relaxed">{message.content}</div>
+            <div className="text-sm leading-relaxed">{displayContent}</div>
           ) : (
+            <>
             <div className="prose prose-invert prose-sm max-w-none">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -114,9 +130,11 @@ export default function ChatMessage({ message }: ChatMessageProps) {
                   hr: () => <hr className="my-3 border-zinc-700" />,
                 }}
               >
-                {message.content}
+                {displayContent}
               </ReactMarkdown>
             </div>
+            <SourcesList sources={sources} />
+            </>
           )
         ) : (
           <div className="flex items-center gap-2 text-sm text-zinc-400">

@@ -1,5 +1,6 @@
 import json
 import os
+import re as _re
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
@@ -16,6 +17,8 @@ from app.prompts import (
     ARTIFACT_EXTRACT_PROMPTS,
     ARTIFACT_SUGGEST_PROMPT,
     ARTIFACT_TITLES,
+    COMPARISON_SYNTHESIS_PROMPT,
+    FOLLOWUP_PROMPT,
     ORCHESTRATOR_PROMPT,
     SYNTHESIS_PROMPT,
 )
@@ -39,11 +42,24 @@ AGENT_TOOL_MAP = {
 }
 
 
-def _get_llm():
+DEFAULT_MODEL = "gpt-4o-mini"
+
+AVAILABLE_MODELS = {
+    "gpt-4o-mini": {"label": "GPT-4o Mini", "provider": "openai"},
+    "gpt-4o": {"label": "GPT-4o", "provider": "openai"},
+    "gpt-4.1-mini": {"label": "GPT-4.1 Mini", "provider": "openai"},
+    "gpt-4.1": {"label": "GPT-4.1", "provider": "openai"},
+    "gpt-4.1-nano": {"label": "GPT-4.1 Nano", "provider": "openai"},
+    "o4-mini": {"label": "o4 Mini", "provider": "openai"},
+}
+
+
+def _get_llm(model: str | None = None, max_tokens: int = 4096):
+    model_name = model if model and model in AVAILABLE_MODELS else DEFAULT_MODEL
     return ChatOpenAI(
-        model="gpt-4o-mini",
+        model=model_name,
         api_key=os.getenv("OPENAI_API_KEY"),
-        max_tokens=4096,
+        max_tokens=max_tokens,
     )
 
 
@@ -71,7 +87,7 @@ async def memory_retrieval_node(state: GraphState) -> dict:
 # Node: Orchestrator — decomposes query into sub-tasks (memory-augmented)
 # ---------------------------------------------------------------------------
 async def orchestrator_node(state: GraphState) -> dict:
-    llm = _get_llm()
+    llm = _get_llm(state.get("model"))
 
     messages = [
         SystemMessage(content=ORCHESTRATOR_PROMPT),
@@ -137,7 +153,7 @@ async def specialist_agent_node(state: GraphState) -> dict:
     prompt_template = AGENT_PROMPTS.get(agent_id, "{task}")
     domain = AGENT_DOMAINS.get(agent_id, "Research")
 
-    llm = _get_llm()
+    llm = _get_llm(state.get("model"))
     agent = create_react_agent(llm, tools)
 
     system_prompt = prompt_template.format(task=task)
@@ -237,8 +253,31 @@ async def specialist_agent_node(state: GraphState) -> dict:
 # ---------------------------------------------------------------------------
 # Node: Synthesis — merges all agent findings
 # ---------------------------------------------------------------------------
+def _detect_comparison(query: str) -> list[str]:
+    """Detect if the query is a comparison and extract entity names."""
+    q = query.lower().strip()
+    # Patterns: "compare X vs Y", "X vs Y vs Z", "X versus Y", "compare X and Y", "X compared to Y"
+    patterns = [
+        r"compare\s+(.+?)(?:\s+vs\.?\s+|\s+versus\s+|\s+and\s+|\s+with\s+)(.+)",
+        r"(.+?)\s+vs\.?\s+(.+)",
+        r"(.+?)\s+versus\s+(.+)",
+        r"(.+?)\s+compared\s+to\s+(.+)",
+    ]
+    for pattern in patterns:
+        match = _re.match(pattern, q)
+        if match:
+            parts = []
+            for group in match.groups():
+                # Split on "vs" or "and" for multi-entity comparisons
+                sub = _re.split(r'\s+vs\.?\s+|\s+and\s+|\s*,\s*', group)
+                parts.extend([s.strip() for s in sub if s.strip()])
+            if len(parts) >= 2:
+                return parts
+    return []
+
+
 async def synthesis_node(state: GraphState) -> dict:
-    llm = _get_llm()
+    llm = _get_llm(state.get("model"))
 
     findings_text = ""
     for finding in state.get("agent_findings", []):
@@ -246,10 +285,24 @@ async def synthesis_node(state: GraphState) -> dict:
         findings_text += f"Status: {finding['status']} | Confidence: {finding['confidence']}\n"
         findings_text += f"{finding['summary']}\n"
 
-    prompt = SYNTHESIS_PROMPT.format(findings=findings_text)
+    query = state["query"]
+    entities = _detect_comparison(query)
+
+    if entities:
+        # Comparison mode: use comparison synthesis prompt
+        entities_header = " | ".join(entities)
+        table_divider = "|".join(["------" for _ in entities])
+        prompt = COMPARISON_SYNTHESIS_PROMPT.format(
+            findings=findings_text,
+            entities_header=entities_header,
+            table_divider=table_divider,
+        )
+    else:
+        prompt = SYNTHESIS_PROMPT.format(findings=findings_text)
+
     messages = [
         SystemMessage(content=prompt),
-        HumanMessage(content=state["query"]),
+        HumanMessage(content=query),
     ]
 
     response = await llm.ainvoke(messages)
@@ -259,8 +312,8 @@ async def synthesis_node(state: GraphState) -> dict:
 # ---------------------------------------------------------------------------
 # Artifact generation helpers
 # ---------------------------------------------------------------------------
-async def suggest_artifacts(findings_text: str) -> list[str]:
-    llm = _get_llm()
+async def suggest_artifacts(findings_text: str, model: str | None = None) -> list[str]:
+    llm = _get_llm(model)
     prompt = ARTIFACT_SUGGEST_PROMPT.format(findings=findings_text)
     try:
         response = await llm.ainvoke([
@@ -278,8 +331,8 @@ async def suggest_artifacts(findings_text: str) -> list[str]:
         return list(ARTIFACT_EXTRACT_PROMPTS.keys())
 
 
-async def extract_single_artifact(artifact_type: str, findings_text: str) -> dict | None:
-    llm = _get_llm()
+async def extract_single_artifact(artifact_type: str, findings_text: str, model: str | None = None) -> dict | None:
+    llm = _get_llm(model)
     prompt_template = ARTIFACT_EXTRACT_PROMPTS.get(artifact_type)
     if not prompt_template:
         return None
@@ -365,10 +418,13 @@ async def run_agent(
     query: str,
     conversation_history: list[dict] | None = None,
     session_id: str | None = None,
+    model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the multi-agent graph and yield SSE event strings."""
     graph = build_graph()
     store = MemoryStore()
+
+    selected_model = model if model and model in AVAILABLE_MODELS else DEFAULT_MODEL
 
     # Create or reuse session
     if not session_id:
@@ -377,6 +433,7 @@ async def run_agent(
     initial_state = {
         "query": query,
         "session_id": session_id,
+        "model": selected_model,
         "conversation_history": conversation_history or [],
         "messages": [],
         "decomposed_tasks": [],
@@ -486,12 +543,18 @@ async def run_agent(
                             "message": "Intelligence brief ready",
                         })
 
+        # Detect comparison mode
+        comparison_entities = _detect_comparison(query)
+        is_comparison = len(comparison_entities) >= 2
+
         # Emit synthesis
         if synthesis_result:
             yield _sse_event("synthesis", {
                 "summary": synthesis_result,
                 "confidence": "medium",
                 "sources_count": agent_findings_count,
+                "comparison": is_comparison,
+                "entities": comparison_entities if is_comparison else [],
             })
         else:
             yield _sse_event("error", {"message": "No synthesis produced"})
@@ -509,7 +572,7 @@ async def run_agent(
                 "status": "spawned",
                 "message": "Analyzing findings for artifact suggestions...",
             })
-            suggested = await suggest_artifacts(findings_text)
+            suggested = await suggest_artifacts(findings_text, selected_model)
 
             if suggested:
                 yield _sse_event("artifact_suggestions", {
@@ -530,7 +593,7 @@ async def run_agent(
                         "status": "researching",
                         "message": f"Creating {title}...",
                     })
-                    artifact = await extract_single_artifact(artifact_type, findings_text)
+                    artifact = await extract_single_artifact(artifact_type, findings_text, selected_model)
                     if artifact:
                         generated_count += 1
                         generated_artifacts.append(artifact)
@@ -547,6 +610,26 @@ async def run_agent(
                     "status": "complete",
                     "message": "No artifacts could be generated from available data",
                 })
+
+        # --- Follow-up question suggestions ---
+        if synthesis_result:
+            try:
+                followup_llm = _get_llm(selected_model, max_tokens=512)
+                followup_prompt = FOLLOWUP_PROMPT.format(
+                    query=query, synthesis=synthesis_result[:2000]
+                )
+                followup_resp = await followup_llm.ainvoke([
+                    SystemMessage(content=followup_prompt),
+                    HumanMessage(content="Suggest follow-up questions now."),
+                ])
+                content = followup_resp.content.strip()
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+                questions = json.loads(content)
+                if isinstance(questions, list) and questions:
+                    yield _sse_event("followup_questions", {"questions": questions[:3]})
+            except Exception:
+                pass
 
         # --- Memory persistence (non-blocking, after response) ---
         yield _sse_event("agent_status", {

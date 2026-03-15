@@ -9,6 +9,11 @@ import AgentStatusPanel from "./components/AgentStatusPanel";
 import ArtifactRenderer from "./components/artifacts/ArtifactRenderer";
 import StarterChips from "./components/StarterChips";
 import SessionSidebar from "./components/SessionSidebar";
+import FollowUpChips from "./components/FollowUpChips";
+import ExportButtons from "./components/ExportButtons";
+import ComparisonBanner from "./components/ComparisonBanner";
+import ComparisonView from "./components/ComparisonView";
+import ModelSelector from "./components/ModelSelector";
 
 export default function Home() {
   const {
@@ -18,12 +23,16 @@ export default function Home() {
     runSteps,
     artifacts,
     artifactSuggestions,
+    followUpQuestions,
+    comparisonMode,
+    selectedModel,
+    setSelectedModel,
     sessionId,
     sendMessage,
     startNewSession,
     loadSession,
   } = useChat();
-  const { sessions, loading: sessionsLoading, refresh: refreshSessions } = useSessions();
+  const { sessions, loading: sessionsLoading, refresh: refreshSessions, deleteSession } = useSessions();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +69,10 @@ export default function Home() {
         activeSessionId={sessionId}
         onNewChat={startNewSession}
         onSelectSession={loadSession}
+        onDeleteSession={(id) => {
+          deleteSession(id);
+          if (sessionId === id) startNewSession();
+        }}
       />
 
       {/* Main Content */}
@@ -76,7 +89,7 @@ export default function Home() {
 
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
-          <div className="mx-auto max-w-3xl">
+          <div className={`mx-auto ${comparisonMode.enabled ? "max-w-5xl" : "max-w-3xl"}`}>
             {messages.length === 0 ? (
               <StarterChips onSelect={handleChipSelect} />
             ) : (
@@ -94,9 +107,31 @@ export default function Home() {
                     isLastAssistant &&
                     (artifacts.length > 0 || artifactSuggestions);
 
+                  const showExtras =
+                    isLastAssistant && !isLoading && msg.content;
+
+                  const isStreaming =
+                    isLastAssistant && !msg.id.startsWith("loaded-");
+
+                  const showComparisonBanner =
+                    isLastAssistant && comparisonMode.enabled;
+
+                  const useComparisonView =
+                    showComparisonBanner && msg.content && !isLoading;
+
                   return (
                     <div key={msg.id}>
-                      <ChatMessage message={msg} />
+                      {showComparisonBanner && (
+                        <ComparisonBanner entities={comparisonMode.entities} />
+                      )}
+                      {useComparisonView ? (
+                        <ComparisonView
+                          content={msg.content}
+                          entities={comparisonMode.entities}
+                        />
+                      ) : (
+                        <ChatMessage message={msg} streaming={isStreaming} />
+                      )}
                       {shouldShowPanel && (
                         <AgentStatusPanel
                           statuses={agentStatuses}
@@ -109,6 +144,16 @@ export default function Home() {
                           artifacts={artifacts}
                           suggestions={artifactSuggestions}
                         />
+                      )}
+                      {showExtras && (
+                        <>
+                          <ExportButtons markdownContent={msg.content} artifacts={artifacts} />
+                          <FollowUpChips
+                            questions={followUpQuestions}
+                            onSelect={sendMessage}
+                            disabled={isLoading}
+                          />
+                        </>
                       )}
                     </div>
                   );
@@ -124,7 +169,7 @@ export default function Home() {
         <div className="border-t border-zinc-800 bg-zinc-950 px-4 py-4">
           <form
             onSubmit={handleSubmit}
-            className="mx-auto flex max-w-3xl items-center gap-3"
+            className={`mx-auto flex ${comparisonMode.enabled ? "max-w-5xl" : "max-w-3xl"} items-center gap-3`}
           >
             <input
               type="text"
@@ -133,6 +178,11 @@ export default function Home() {
               placeholder="Ask a growth intelligence question..."
               disabled={isLoading}
               className="flex-1 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-colors focus:border-zinc-500 disabled:opacity-50"
+            />
+            <ModelSelector
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              disabled={isLoading}
             />
             <button
               type="submit"

@@ -181,10 +181,24 @@ Format your response as a well-structured markdown report with:
 - **Actionable Recommendations**
 - **Confidence Assessment**
 
-CRITICAL: At the very end of your response, you MUST include a "## Sources" section that consolidates ALL URLs referenced by all agents into a single deduplicated list of clickable markdown links. Format each source as:
-- [Descriptive title](https://actual-url.com)
+CRITICAL: At the very end of your response, you MUST include a "## Sources" section that consolidates ALL URLs referenced by all agents into a single deduplicated list of clickable markdown links.
 
-Every URL mentioned anywhere in the agent findings MUST appear in this final Sources section. Do not skip any URLs. These will be rendered as clickable hyperlinks in the UI."""
+For EACH source, assign a credibility tier based on these rules:
+- **Official** (score 5/5): Company websites, official docs, SEC filings, government data
+- **Research** (score 4/5): Industry reports (Gartner, McKinsey), peer-reviewed research, analyst reports
+- **News** (score 3/5): Major news outlets, tech publications (TechCrunch, The Verge, etc.)
+- **Community** (score 2/5): Hacker News, Reddit, Stack Overflow, developer forums
+- **Social** (score 1/5): Social media posts, unverified blogs, anonymous comments
+
+Format each source EXACTLY as:
+- [Descriptive title](https://actual-url.com) `Official` `5/5`
+
+Use the tier name and score directly — do NOT use placeholders. Examples:
+- [Pinecone Pricing Page](https://pinecone.io/pricing) `Official` `5/5`
+- [TechCrunch: Vector DB Funding](https://techcrunch.com/article) `News` `3/5`
+- [HN Discussion on Qdrant](https://news.ycombinator.com/item?id=123) `Community` `2/5`
+
+Every URL mentioned anywhere in the agent findings MUST appear in this final Sources section. Do not skip any URLs. These will be rendered as clickable hyperlinks with credibility badges in the UI."""
 
 ARTIFACT_SUGGEST_PROMPT = """You are an analyst deciding which interactive visualizations can be created from research findings.
 
@@ -321,3 +335,64 @@ AGENT_DOMAINS = {
     "positioning_agent": "Positioning & Messaging",
     "adjacent_market_agent": "Adjacent Market Collision",
 }
+
+COMPARISON_SYNTHESIS_PROMPT = """You are the Synthesis Agent for a Growth Intelligence Platform operating in COMPARISON MODE. You received findings from specialist agents comparing specific entities.
+
+Agent findings to synthesize:
+{findings}
+
+Create a structured comparison report. Format your response as a well-structured markdown report with:
+
+**IMPORTANT: Use this exact structure for comparison:**
+
+## Executive Summary
+2-3 sentences on the overall comparison.
+
+## Head-to-Head Comparison
+
+### Feature Comparison
+| Feature | {entities_header} |
+|---------|{table_divider}|
+(Fill rows with key comparison points from the findings)
+
+### Pricing Comparison
+| Aspect | {entities_header} |
+|--------|{table_divider}|
+(Fill rows with pricing data from findings)
+
+### Positioning & Perception
+For each entity, summarize:
+- Official positioning
+- User/community perception
+- Key differentiator
+
+## Strengths & Weaknesses
+For each entity, list 3-4 bullet points of strengths and 3-4 weaknesses.
+
+## Verdict
+Which is better for which use case? Be specific and opinionated.
+
+## Confidence Assessment
+Rate your confidence in the comparison.
+
+CRITICAL: At the very end, include a "## Sources" section. For EACH source, assign a credibility tier:
+- **Official** (score 5/5): Company websites, official docs, SEC filings
+- **Research** (score 4/5): Industry reports, analyst reports
+- **News** (score 3/5): Major news outlets, tech publications
+- **Community** (score 2/5): Hacker News, Reddit, developer forums
+- **Social** (score 1/5): Social media posts, unverified blogs
+
+Format each source as:
+- [Descriptive title](https://actual-url.com) `tier` `score/5`"""
+
+FOLLOWUP_PROMPT = """Based on this growth intelligence research query and the synthesis produced, suggest 3 natural follow-up questions the user might want to explore next. The questions should dig deeper into the findings, explore adjacent angles, or validate key claims.
+
+Original query: {query}
+
+Synthesis (abbreviated):
+{synthesis}
+
+Respond with ONLY valid JSON — no markdown:
+["Question 1?", "Question 2?", "Question 3?"]
+
+Keep each question under 80 characters. Make them specific and actionable, not generic."""

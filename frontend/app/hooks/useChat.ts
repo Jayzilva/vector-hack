@@ -52,6 +52,12 @@ export function useChat() {
   const [artifactSuggestions, setArtifactSuggestions] =
     useState<ArtifactSuggestions | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
+  const [comparisonMode, setComparisonMode] = useState<{
+    enabled: boolean;
+    entities: string[];
+  }>({ enabled: false, entities: [] });
+  const [selectedModel, setSelectedModel] = useState("gpt-4o-mini");
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
@@ -75,6 +81,8 @@ export function useChat() {
       setRunSteps([]);
       setArtifacts([]);
       setArtifactSuggestions(null);
+      setFollowUpQuestions([]);
+      setComparisonMode({ enabled: false, entities: [] });
 
       abortRef.current = new AbortController();
 
@@ -86,6 +94,7 @@ export function useChat() {
             query: query.trim(),
             conversation_history: conversationHistory,
             session_id: sessionId,
+            model: selectedModel,
           }),
           signal: abortRef.current.signal,
         });
@@ -189,6 +198,12 @@ export function useChat() {
                         : m,
                     ),
                   );
+                  if (data.comparison) {
+                    setComparisonMode({
+                      enabled: true,
+                      entities: (data.entities as string[]) || [],
+                    });
+                  }
                   break;
 
                 case "error":
@@ -201,6 +216,12 @@ export function useChat() {
                     ),
                   );
                   break;
+
+                case "followup_questions": {
+                  const questions = (data.questions as string[]) ?? [];
+                  setFollowUpQuestions(questions);
+                  break;
+                }
 
                 case "done":
                   if (data.session_id) {
@@ -230,7 +251,7 @@ export function useChat() {
         setIsLoading(false);
       }
     },
-    [messages, isLoading, sessionId],
+    [messages, isLoading, sessionId, selectedModel],
   );
 
   const startNewSession = useCallback(() => {
@@ -240,6 +261,8 @@ export function useChat() {
     setRunSteps([]);
     setArtifacts([]);
     setArtifactSuggestions(null);
+    setFollowUpQuestions([]);
+    setComparisonMode({ enabled: false, entities: [] });
   }, []);
 
   const loadSession = useCallback(async (sid: string) => {
@@ -326,6 +349,10 @@ export function useChat() {
     runSteps,
     artifacts,
     artifactSuggestions,
+    followUpQuestions,
+    comparisonMode,
+    selectedModel,
+    setSelectedModel,
     sessionId,
     sendMessage,
     startNewSession,

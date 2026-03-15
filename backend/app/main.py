@@ -27,6 +27,7 @@ class QueryRequest(BaseModel):
     query: str
     conversation_history: list[dict] = []
     session_id: str | None = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -42,7 +43,7 @@ async def query(request: QueryRequest):
 
     async def event_stream():
         async for event_json in run_agent(
-            request.query, request.conversation_history, session_id
+            request.query, request.conversation_history, session_id, request.model
         ):
             yield f"data: {event_json}\n\n"
 
@@ -57,6 +58,16 @@ async def query(request: QueryRequest):
     )
 
 
+@app.get("/api/models")
+async def list_models():
+    from app.agent import AVAILABLE_MODELS, DEFAULT_MODEL
+    models = [
+        {"id": mid, "label": info["label"], "provider": info["provider"]}
+        for mid, info in AVAILABLE_MODELS.items()
+    ]
+    return {"models": models, "default": DEFAULT_MODEL}
+
+
 @app.get("/api/sessions")
 async def list_sessions():
     sessions = memory_store.list_sessions()
@@ -67,6 +78,12 @@ async def list_sessions():
 async def get_session(session_id: str):
     history = memory_store.get_session_history(session_id)
     return {"session_id": session_id, "messages": history}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    memory_store.delete_session(session_id)
+    return {"status": "deleted", "session_id": session_id}
 
 
 @app.get("/api/memory/search")

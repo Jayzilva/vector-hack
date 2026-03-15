@@ -31,5 +31,17 @@ export function useSessions() {
     fetchSessions();
   }, [fetchSessions]);
 
-  return { sessions, loading, refresh: fetchSessions };
+  const deleteSession = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/sessions/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return;
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  return { sessions, loading, refresh: fetchSessions, deleteSession };
 }

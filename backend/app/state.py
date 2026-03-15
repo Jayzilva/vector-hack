@@ -23,6 +23,7 @@ def merge_findings(left: list[AgentFindings], right: list[AgentFindings]) -> lis
 class GraphState(TypedDict):
     query: str
     session_id: str
+    model: str
     conversation_history: list[dict]
     messages: Annotated[list, add_messages]
     decomposed_tasks: list[dict]

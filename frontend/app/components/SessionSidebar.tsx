@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageSquarePlus, History, Loader2 } from "lucide-react";
+import { MessageSquarePlus, History, Loader2, Trash2 } from "lucide-react";
 import { Session } from "../hooks/useSessions";
 
 interface SessionSidebarProps {
@@ -9,6 +9,7 @@ interface SessionSidebarProps {
   activeSessionId: string | null;
   onNewChat: () => void;
   onSelectSession: (id: string) => void;
+  onDeleteSession: (id: string) => void;
 }
 
 function formatDate(iso: string): string {
@@ -35,6 +36,7 @@ export default function SessionSidebar({
   activeSessionId,
   onNewChat,
   onSelectSession,
+  onDeleteSession,
 }: SessionSidebarProps) {
   return (
     <div className="flex h-full w-64 flex-col border-r border-zinc-800 bg-zinc-900">
@@ -65,21 +67,36 @@ export default function SessionSidebar({
           </p>
         ) : (
           sessions.map((s) => (
-            <button
+            <div
               key={s.id}
-              type="button"
-              onClick={() => onSelectSession(s.id)}
-              className={`mb-1 w-full rounded-lg px-3 py-2 text-left transition-colors ${
+              className={`group mb-1 flex items-center rounded-lg transition-colors ${
                 activeSessionId === s.id
                   ? "bg-zinc-700/50 text-zinc-100"
                   : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
               }`}
             >
-              <p className="truncate text-sm">{s.title}</p>
-              <p className="mt-0.5 text-xs text-zinc-600">
-                {formatDate(s.updated_at)}
-              </p>
-            </button>
+              <button
+                type="button"
+                onClick={() => onSelectSession(s.id)}
+                className="min-w-0 flex-1 px-3 py-2 text-left"
+              >
+                <p className="truncate text-sm">{s.title}</p>
+                <p className="mt-0.5 text-xs text-zinc-600">
+                  {formatDate(s.updated_at)}
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteSession(s.id);
+                }}
+                className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-red-500/20 hover:text-red-400 group-hover:opacity-100"
+                title="Delete session"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))
         )}
       </div>
