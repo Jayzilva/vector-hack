@@ -41,7 +41,7 @@ interface SSEEvent {
   data: Record<string, unknown>;
 }
 
-const API_URL = "http://localhost:8000/api/query";
+const API_URL = "/api/query";
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -244,7 +244,7 @@ export function useChat() {
 
   const loadSession = useCallback(async (sid: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${sid}`);
+      const res = await fetch(`/api/sessions/${sid}`);
       if (!res.ok) return;
       const data = await res.json();
       setSessionId(sid);

@@ -16,7 +16,7 @@ export function useSessions() {
   const fetchSessions = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/sessions");
+      const res = await fetch("/api/sessions");
       if (!res.ok) return;
       const data = await res.json();
       setSessions(data.sessions || []);
