@@ -12,6 +12,9 @@ from langgraph.types import Send
 from app.prompts import (
     AGENT_DOMAINS,
     AGENT_PROMPTS,
+    ARTIFACT_EXTRACT_PROMPTS,
+    ARTIFACT_SUGGEST_PROMPT,
+    ARTIFACT_TITLES,
     ORCHESTRATOR_PROMPT,
     SYNTHESIS_PROMPT,
 )
@@ -220,6 +223,80 @@ async def synthesis_node(state: GraphState) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Step 1: Suggest which artifacts are viable from the findings
+# ---------------------------------------------------------------------------
+async def suggest_artifacts(findings_text: str) -> list[str]:
+    """Ask LLM which artifacts can be created from the available data."""
+    llm = _get_llm()
+    prompt = ARTIFACT_SUGGEST_PROMPT.format(findings=findings_text)
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content="Which artifacts can be generated?"),
+    ]
+
+    try:
+        response = await llm.ainvoke(messages)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = json.loads(content)
+        suggested = data.get("artifacts", [])
+        # Filter to valid types only
+        valid = set(ARTIFACT_EXTRACT_PROMPTS.keys())
+        return [a for a in suggested if a in valid]
+    except Exception:
+        # Fallback: try all of them
+        return list(ARTIFACT_EXTRACT_PROMPTS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Extract one artifact at a time
+# ---------------------------------------------------------------------------
+async def extract_single_artifact(artifact_type: str, findings_text: str) -> dict | None:
+    """Extract structured data for a single artifact type."""
+    llm = _get_llm()
+    prompt_template = ARTIFACT_EXTRACT_PROMPTS.get(artifact_type)
+    if not prompt_template:
+        return None
+
+    prompt = prompt_template.format(findings=findings_text)
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content="Extract the data now."),
+    ]
+
+    try:
+        response = await llm.ainvoke(messages)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+        extracted = json.loads(content)
+
+        title = ARTIFACT_TITLES.get(artifact_type, artifact_type.replace("_", " ").title())
+
+        # Wrap list-based extractions into the expected structure
+        if artifact_type == "competitive_landscape":
+            if isinstance(extracted, list) and len(extracted) > 0:
+                return {"type": artifact_type, "title": title, "data": {"title": title, "competitors": extracted}}
+        elif artifact_type == "trend_chart":
+            if isinstance(extracted, dict) and extracted.get("signals"):
+                return {"type": artifact_type, "title": title, "data": {"title": title, **extracted}}
+        elif artifact_type == "pricing_table":
+            if isinstance(extracted, list) and len(extracted) > 0:
+                return {"type": artifact_type, "title": title, "data": {"title": title, "competitors": extracted}}
+        elif artifact_type == "sentiment_scorecard":
+            if isinstance(extracted, list) and len(extracted) > 0:
+                return {"type": artifact_type, "title": title, "data": {"title": title, "scores": extracted}}
+        elif artifact_type == "messaging_matrix":
+            if isinstance(extracted, list) and len(extracted) > 0:
+                return {"type": artifact_type, "title": title, "data": {"title": title, "competitors": extracted}}
+
+        return None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Conditional edge: fan-out to specialist agents in parallel
 # ---------------------------------------------------------------------------
 def route_to_agents(state: GraphState) -> list[Send]:
@@ -296,6 +373,7 @@ async def run_agent(query: str, conversation_history: list[dict] | None = None) 
         completed_agents: set[str] = set()
         synthesis_result = ""
         agent_findings_count = 0
+        all_findings: list[dict] = []
 
         async for chunk in graph.astream(initial_state, stream_mode="updates"):
             for node_name, node_output in chunk.items():
@@ -325,6 +403,7 @@ async def run_agent(query: str, conversation_history: list[dict] | None = None) 
                         agent_id = finding.get("agent_id", "")
                         completed_agents.add(agent_id)
                         agent_findings_count += 1
+                        all_findings.append(finding)
                         status = finding.get("status", "complete")
                         domain = finding.get("domain", "")
 
@@ -354,6 +433,7 @@ async def run_agent(query: str, conversation_history: list[dict] | None = None) 
                             "message": "Intelligence brief ready",
                         })
 
+        # Emit synthesis first so user sees the response
         if synthesis_result:
             yield _sse_event("synthesis", {
                 "summary": synthesis_result,
@@ -362,6 +442,59 @@ async def run_agent(query: str, conversation_history: list[dict] | None = None) 
             })
         else:
             yield _sse_event("error", {"message": "No synthesis produced"})
+
+        # Then generate artifacts from findings — visible one-by-one
+        if all_findings:
+            findings_text = ""
+            for f in all_findings:
+                findings_text += f"\n\n## {f.get('domain', '')} ({f.get('agent_id', '')})\n"
+                findings_text += f"{f.get('summary', '')}\n"
+
+            # Step 1: Suggest which artifacts are viable
+            yield _sse_event("agent_status", {
+                "agent_id": "artifacts",
+                "status": "spawned",
+                "message": "Analyzing findings for artifact suggestions...",
+            })
+            suggested = await suggest_artifacts(findings_text)
+
+            if suggested:
+                yield _sse_event("artifact_suggestions", {
+                    "suggested": suggested,
+                    "titles": {s: ARTIFACT_TITLES.get(s, s) for s in suggested},
+                })
+                yield _sse_event("agent_status", {
+                    "agent_id": "artifacts",
+                    "status": "researching",
+                    "message": f"Generating {len(suggested)} artifacts...",
+                })
+
+                # Step 2: Generate each artifact individually
+                generated_count = 0
+                for artifact_type in suggested:
+                    title = ARTIFACT_TITLES.get(artifact_type, artifact_type)
+                    yield _sse_event("agent_status", {
+                        "agent_id": "artifacts",
+                        "status": "researching",
+                        "message": f"Creating {title}...",
+                    })
+
+                    artifact = await extract_single_artifact(artifact_type, findings_text)
+                    if artifact:
+                        generated_count += 1
+                        yield _sse_event("artifact", artifact)
+
+                yield _sse_event("agent_status", {
+                    "agent_id": "artifacts",
+                    "status": "complete",
+                    "message": f"Generated {generated_count} of {len(suggested)} artifacts",
+                })
+            else:
+                yield _sse_event("agent_status", {
+                    "agent_id": "artifacts",
+                    "status": "complete",
+                    "message": "No artifacts could be generated from available data",
+                })
 
     except Exception as e:
         yield _sse_event("agent_status", {

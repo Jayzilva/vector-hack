@@ -5,11 +5,19 @@ import { Send } from "lucide-react";
 import { useChat } from "./hooks/useChat";
 import ChatMessage from "./components/ChatMessage";
 import AgentStatusPanel from "./components/AgentStatusPanel";
+import ArtifactRenderer from "./components/artifacts/ArtifactRenderer";
 import StarterChips from "./components/StarterChips";
 
 export default function Home() {
-  const { messages, isLoading, agentStatuses, runSteps, sendMessage } =
-    useChat();
+  const {
+    messages,
+    isLoading,
+    agentStatuses,
+    runSteps,
+    artifacts,
+    artifactSuggestions,
+    sendMessage,
+  } = useChat();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -17,7 +25,7 @@ export default function Home() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, agentStatuses, runSteps]);
+  }, [messages, agentStatuses, runSteps, artifacts]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -49,19 +57,41 @@ export default function Home() {
             <StarterChips onSelect={handleChipSelect} />
           ) : (
             <>
-              {messages.map((msg) => (
-                <ChatMessage key={msg.id} message={msg} />
-              ))}
-            </>
-          )}
+              {messages.map((msg, idx) => {
+                // Show Agent Activity panel between the last user message and assistant response
+                const isLastUser =
+                  msg.role === "user" &&
+                  (idx === messages.length - 1 ||
+                    messages[idx + 1]?.role === "assistant");
+                const shouldShowPanel = isLastUser && showPanel;
 
-          {/* Agent Status Panel — visible during and after research */}
-          {showPanel && (
-            <AgentStatusPanel
-              statuses={agentStatuses}
-              runSteps={runSteps}
-              isLoading={isLoading}
-            />
+                // Show artifacts after the last assistant message
+                const isLastAssistant =
+                  msg.role === "assistant" && idx === messages.length - 1;
+                const showArtifacts =
+                  isLastAssistant &&
+                  (artifacts.length > 0 || artifactSuggestions);
+
+                return (
+                  <div key={msg.id}>
+                    <ChatMessage message={msg} />
+                    {shouldShowPanel && (
+                      <AgentStatusPanel
+                        statuses={agentStatuses}
+                        runSteps={runSteps}
+                        isLoading={isLoading}
+                      />
+                    )}
+                    {showArtifacts && (
+                      <ArtifactRenderer
+                        artifacts={artifacts}
+                        suggestions={artifactSuggestions}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </>
           )}
 
           <div ref={messagesEndRef} />

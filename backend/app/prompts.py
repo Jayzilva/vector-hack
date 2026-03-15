@@ -186,6 +186,124 @@ CRITICAL: At the very end of your response, you MUST include a "## Sources" sect
 
 Every URL mentioned anywhere in the agent findings MUST appear in this final Sources section. Do not skip any URLs. These will be rendered as clickable hyperlinks in the UI."""
 
+ARTIFACT_SUGGEST_PROMPT = """You are an analyst deciding which interactive visualizations can be created from research findings.
+
+Agent findings:
+{findings}
+
+Based on the data available in these findings, decide which of these 5 artifact types have ENOUGH data to be useful. Only suggest artifacts where the findings contain concrete data points — do not suggest artifacts for domains with vague or missing data.
+
+Available artifact types:
+- competitive_landscape: Requires at least 2 named competitors with some details (features, funding, positioning)
+- trend_chart: Requires market signals, growth indicators, or trend data points with relative strengths
+- pricing_table: Requires pricing information for at least 2 companies (pricing model, price ranges)
+- sentiment_scorecard: Requires sentiment data, review scores, or user feedback themes
+- messaging_matrix: Requires both official positioning AND user perception data for at least 2 companies
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+{{"artifacts": ["competitive_landscape", "trend_chart"]}}"""
+
+ARTIFACT_EXTRACT_COMPETITIVE = """Extract competitor data from these findings into structured JSON.
+
+Findings:
+{findings}
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+Example format:
+[
+  {{
+    "name": "Company Name",
+    "category": "Direct | Indirect | Adjacent",
+    "funding": "$XXM or N/A",
+    "key_features": ["feature1", "feature2", "feature3"],
+    "positioning": "One sentence positioning",
+    "strength": "high | medium | low"
+  }}
+]"""
+
+ARTIFACT_EXTRACT_TREND = """Extract market trend signals from these findings into structured JSON. Each signal should have a relative strength value from 0-100 representing how strong that signal is.
+
+Findings:
+{findings}
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+Example format:
+{{
+  "trend_direction": "growing | stable | declining",
+  "signals": [
+    {{
+      "label": "Signal name (keep short)",
+      "value": 75,
+      "category": "Growth | Adoption | Investment | Risk"
+    }}
+  ]
+}}"""
+
+ARTIFACT_EXTRACT_PRICING = """Extract pricing data from these findings into structured JSON.
+
+Findings:
+{findings}
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+Example format:
+[
+  {{
+    "name": "Company Name",
+    "model": "per-seat | usage-based | flat | freemium",
+    "starting_price": "$XX/mo",
+    "enterprise_price": "$XX/mo or Custom",
+    "free_tier": true
+  }}
+]"""
+
+ARTIFACT_EXTRACT_SENTIMENT = """Extract sentiment and user feedback data from these findings into structured JSON. Score each category from 0-10.
+
+Findings:
+{findings}
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+Example format:
+[
+  {{
+    "category": "Category name",
+    "score": 7.5,
+    "sentiment": "positive | negative | mixed | neutral",
+    "detail": "Brief explanation of the sentiment"
+  }}
+]"""
+
+ARTIFACT_EXTRACT_MESSAGING = """Extract positioning vs perception data from these findings into structured JSON.
+
+Findings:
+{findings}
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+Example format:
+[
+  {{
+    "name": "Company Name",
+    "official_positioning": "What they claim about themselves",
+    "user_perception": "What users actually say about them",
+    "gap": "high | medium | low | aligned"
+  }}
+]"""
+
+ARTIFACT_EXTRACT_PROMPTS = {
+    "competitive_landscape": ARTIFACT_EXTRACT_COMPETITIVE,
+    "trend_chart": ARTIFACT_EXTRACT_TREND,
+    "pricing_table": ARTIFACT_EXTRACT_PRICING,
+    "sentiment_scorecard": ARTIFACT_EXTRACT_SENTIMENT,
+    "messaging_matrix": ARTIFACT_EXTRACT_MESSAGING,
+}
+
+ARTIFACT_TITLES = {
+    "competitive_landscape": "Competitive Landscape",
+    "trend_chart": "Market Trend Signals",
+    "pricing_table": "Pricing Comparison",
+    "sentiment_scorecard": "Sentiment Analysis",
+    "messaging_matrix": "Positioning vs Perception",
+}
+
 AGENT_PROMPTS = {
     "market_trend_agent": MARKET_TREND_PROMPT,
     "competitive_agent": COMPETITIVE_PROMPT,

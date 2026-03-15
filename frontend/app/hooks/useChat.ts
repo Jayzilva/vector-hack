@@ -24,6 +24,18 @@ export interface RunStep {
   timestamp: string;
 }
 
+export interface Artifact {
+  type: string;
+  title: string;
+  // biome-ignore lint/suspicious/noExplicitAny: artifact data varies by type
+  data: any;
+}
+
+export interface ArtifactSuggestions {
+  suggested: string[];
+  titles: Record<string, string>;
+}
+
 interface SSEEvent {
   event: string;
   data: Record<string, unknown>;
@@ -36,6 +48,9 @@ export function useChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [agentStatuses, setAgentStatuses] = useState<AgentStatus[]>([]);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifactSuggestions, setArtifactSuggestions] =
+    useState<ArtifactSuggestions | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
@@ -57,6 +72,8 @@ export function useChat() {
       setIsLoading(true);
       setAgentStatuses([]);
       setRunSteps([]);
+      setArtifacts([]);
+      setArtifactSuggestions(null);
 
       abortRef.current = new AbortController();
 
@@ -143,6 +160,24 @@ export function useChat() {
                 case "finding":
                   break;
 
+                case "artifact_suggestions": {
+                  setArtifactSuggestions({
+                    suggested: (data.suggested as string[]) ?? [],
+                    titles: (data.titles as Record<string, string>) ?? {},
+                  });
+                  break;
+                }
+
+                case "artifact": {
+                  const artifact: Artifact = {
+                    type: String(data.type ?? ""),
+                    title: String(data.title ?? ""),
+                    data: data.data ?? {},
+                  };
+                  setArtifacts((prev) => [...prev, artifact]);
+                  break;
+                }
+
                 case "synthesis":
                   assistantContent = (data.summary as string) || "";
                   setMessages((prev) =>
@@ -193,5 +228,13 @@ export function useChat() {
     [messages, isLoading],
   );
 
-  return { messages, isLoading, agentStatuses, runSteps, sendMessage };
+  return {
+    messages,
+    isLoading,
+    agentStatuses,
+    runSteps,
+    artifacts,
+    artifactSuggestions,
+    sendMessage,
+  };
 }
