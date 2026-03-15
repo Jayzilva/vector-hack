@@ -1,2 +1,4 @@
-https://newsdata.io/api/1/latest? 
-  apikey=pub_7161d60e6ecf4ecbbcb84fc8250840ee
+https://newsdata.io
+
+API Endpoint: https://newsdata.io/api/1/latest
+Auth: apikey query param via NEWSDATA_API_KEY in .env

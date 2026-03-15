@@ -22,8 +22,10 @@ def merge_findings(left: list[AgentFindings], right: list[AgentFindings]) -> lis
 
 class GraphState(TypedDict):
     query: str
+    session_id: str
     conversation_history: list[dict]
     messages: Annotated[list, add_messages]
     decomposed_tasks: list[dict]
     agent_findings: Annotated[list[AgentFindings], merge_findings]
     synthesis: str
+    memory_context: dict
