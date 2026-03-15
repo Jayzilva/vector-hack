@@ -8,13 +8,16 @@ import AgentStatusPanel from "./components/AgentStatusPanel";
 import StarterChips from "./components/StarterChips";
 
 export default function Home() {
-  const { messages, isLoading, agentStatuses, sendMessage } = useChat();
+  const { messages, isLoading, agentStatuses, runSteps, sendMessage } =
+    useChat();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const showPanel = agentStatuses.length > 0;
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, agentStatuses]);
+  }, [messages, agentStatuses, runSteps]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -35,7 +38,7 @@ export default function Home() {
           Growth Intelligence Platform
         </h1>
         <p className="text-xs text-zinc-500">
-          AI-powered research agent
+          AI-powered multi-agent research system
         </p>
       </header>
 
@@ -52,9 +55,13 @@ export default function Home() {
             </>
           )}
 
-          {/* Agent Status Panel */}
-          {agentStatuses.length > 0 && (
-            <AgentStatusPanel statuses={agentStatuses} />
+          {/* Agent Status Panel — visible during and after research */}
+          {showPanel && (
+            <AgentStatusPanel
+              statuses={agentStatuses}
+              runSteps={runSteps}
+              isLoading={isLoading}
+            />
           )}
 
           <div ref={messagesEndRef} />

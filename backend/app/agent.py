@@ -1,141 +1,375 @@
 import json
 import os
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
+from langgraph.types import Send
 
-from app.tools import serper_search, firecrawl_scrape
+from app.prompts import (
+    AGENT_DOMAINS,
+    AGENT_PROMPTS,
+    ORCHESTRATOR_PROMPT,
+    SYNTHESIS_PROMPT,
+)
+from app.state import GraphState
+from app.tools import (
+    ADJACENT_MARKET_TOOLS,
+    COMPETITIVE_TOOLS,
+    MARKET_TREND_TOOLS,
+    POSITIONING_TOOLS,
+    PRICING_TOOLS,
+    WIN_LOSS_TOOLS,
+)
 
-SYSTEM_PROMPT = """You are a Growth Intelligence Research Agent. Your job is to research and analyze strategic growth questions for product teams.
-
-When given a query, you should:
-1. Break down the question into research angles
-2. Use the available tools to gather real data:
-   - Use serper_search to find market data, competitor information, news, and trends
-   - Use firecrawl_scrape to get detailed content from specific URLs you find interesting
-3. Synthesize your findings into actionable intelligence
-
-Guidelines:
-- Always ground your analysis in real data from your research
-- Clearly distinguish between facts (sourced data) and your interpretations
-- Provide confidence levels (high/medium/low) for your conclusions
-- Include source URLs for key claims
-- Be concise but thorough - focus on actionable insights
-- Structure your response with clear sections"""
+AGENT_TOOL_MAP = {
+    "market_trend_agent": MARKET_TREND_TOOLS,
+    "competitive_agent": COMPETITIVE_TOOLS,
+    "win_loss_agent": WIN_LOSS_TOOLS,
+    "pricing_agent": PRICING_TOOLS,
+    "positioning_agent": POSITIONING_TOOLS,
+    "adjacent_market_agent": ADJACENT_MARKET_TOOLS,
+}
 
 
-def _build_agent():
-    llm = ChatOpenAI(
+def _get_llm():
+    return ChatOpenAI(
         model="gpt-4o-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         max_tokens=4096,
     )
-    tools = [serper_search, firecrawl_scrape]
-    return create_react_agent(llm, tools)
 
 
-async def run_agent(query: str, conversation_history: list[dict] | None = None) -> AsyncGenerator[str, None]:
-    """Run the research agent and yield SSE event strings."""
-    agent = _build_agent()
+# ---------------------------------------------------------------------------
+# Node: Orchestrator — decomposes query into sub-tasks
+# ---------------------------------------------------------------------------
+async def orchestrator_node(state: GraphState) -> dict:
+    llm = _get_llm()
 
-    # Build message list
-    messages = [SystemMessage(content=SYSTEM_PROMPT)]
-    if conversation_history:
-        for msg in conversation_history:
-            if msg.get("role") == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            elif msg.get("role") == "assistant":
-                messages.append(AIMessage(content=msg["content"]))
-    messages.append(HumanMessage(content=query))
+    messages = [
+        SystemMessage(content=ORCHESTRATOR_PROMPT),
+    ]
 
-    # Emit initial status
-    yield _sse_event("agent_status", {
-        "agent_id": "research_agent",
-        "status": "spawned",
-        "message": "Starting research...",
-    })
+    if state.get("conversation_history"):
+        context = "\n".join(
+            f"{msg['role']}: {msg['content']}"
+            for msg in state["conversation_history"][-6:]
+        )
+        messages.append(HumanMessage(content=f"Previous conversation context:\n{context}"))
 
-    yield _sse_event("agent_status", {
-        "agent_id": "research_agent",
-        "status": "researching",
-        "message": "Analyzing query and planning research...",
-    })
+    messages.append(HumanMessage(content=state["query"]))
+
+    response = await llm.ainvoke(messages)
 
     try:
-        final_content = ""
-        seen_tools = set()
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+        tasks = json.loads(content)
+        decomposed = tasks.get("tasks", [])
+    except (json.JSONDecodeError, AttributeError):
+        decomposed = [
+            {"agent_id": "market_trend_agent", "task": state["query"]},
+            {"agent_id": "competitive_agent", "task": state["query"]},
+            {"agent_id": "win_loss_agent", "task": state["query"]},
+            {"agent_id": "pricing_agent", "task": state["query"]},
+            {"agent_id": "positioning_agent", "task": state["query"]},
+            {"agent_id": "adjacent_market_agent", "task": state["query"]},
+        ]
 
+    return {"decomposed_tasks": decomposed}
+
+
+# ---------------------------------------------------------------------------
+# Node: Specialist Agent — runs a ReAct agent with chain-of-thought capture
+# ---------------------------------------------------------------------------
+async def specialist_agent_node(state: GraphState) -> dict:
+    task_info = state["decomposed_tasks"][0]
+    agent_id = task_info["agent_id"]
+    task = task_info["task"]
+
+    tools = AGENT_TOOL_MAP.get(agent_id, MARKET_TREND_TOOLS)
+    prompt_template = AGENT_PROMPTS.get(agent_id, "{task}")
+    domain = AGENT_DOMAINS.get(agent_id, "Research")
+
+    llm = _get_llm()
+    agent = create_react_agent(llm, tools)
+
+    system_prompt = prompt_template.format(task=task)
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=task),
+    ]
+
+    run_history: list[dict] = []
+
+    try:
         async for event in agent.astream_events(
-            {"messages": messages},
-            version="v2",
+            {"messages": messages}, version="v2"
         ):
-            kind = event.get("event")
+            kind = event.get("event", "")
+            ts = datetime.now(timezone.utc).isoformat()
 
-            # Detect tool calls
+            # Capture tool calls (agent deciding to use a tool)
             if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and hasattr(chunk, "tool_call_chunks"):
                     for tc in chunk.tool_call_chunks:
-                        if tc.get("name") and tc["name"] not in seen_tools:
-                            seen_tools.add(tc["name"])
-                            tool_name = tc["name"]
-                            if tool_name == "serper_search":
-                                msg = "Searching the web..."
-                            elif tool_name == "firecrawl_scrape":
-                                msg = "Scraping webpage for details..."
-                            else:
-                                msg = f"Using {tool_name}..."
-                            yield _sse_event("agent_status", {
-                                "agent_id": "research_agent",
-                                "status": "researching",
-                                "message": msg,
+                        if tc.get("name"):
+                            run_history.append({
+                                "type": "tool_call",
+                                "agent_id": agent_id,
+                                "tool": tc["name"],
+                                "input": tc.get("args", ""),
+                                "timestamp": ts,
                             })
 
-            # Detect tool results
+            # Capture tool results
             if kind == "on_tool_end":
                 tool_name = event.get("name", "")
-                output = event.get("data", {}).get("output", "")
-                snippet = str(output)[:300]
-                yield _sse_event("finding", {
-                    "agent_id": "research_agent",
-                    "domain": "Research",
-                    "finding": f"[{tool_name}] {snippet}...",
+                output = str(event.get("data", {}).get("output", ""))
+                run_history.append({
+                    "type": "tool_result",
+                    "agent_id": agent_id,
+                    "tool": tool_name,
+                    "output": output[:500],
+                    "timestamp": ts,
                 })
 
-            # Capture final AI message
+            # Capture agent reasoning (final AI message content)
             if kind == "on_chat_model_end":
                 output = event.get("data", {}).get("output")
-                if output and hasattr(output, "content") and isinstance(output.content, str):
-                    final_content = output.content
+                if output and hasattr(output, "content") and isinstance(output.content, str) and output.content.strip():
+                    # Only capture reasoning, not tool-call-only messages
+                    if not (hasattr(output, "tool_calls") and output.tool_calls and not output.content.strip()):
+                        run_history.append({
+                            "type": "thought",
+                            "agent_id": agent_id,
+                            "content": output.content[:1000],
+                            "timestamp": ts,
+                        })
 
-        # Emit synthesis
-        if final_content:
-            yield _sse_event("agent_status", {
-                "agent_id": "research_agent",
-                "status": "complete",
-                "message": "Research complete",
-            })
+        # Extract final summary from last thought
+        summary = ""
+        for entry in reversed(run_history):
+            if entry["type"] == "thought":
+                summary = entry["content"]
+                break
+
+        if not summary:
+            summary = "Agent completed but produced no text output."
+
+        return {
+            "agent_findings": [
+                {
+                    "agent_id": agent_id,
+                    "domain": domain,
+                    "status": "complete",
+                    "confidence": "medium",
+                    "findings": [],
+                    "summary": summary,
+                    "run_history": run_history,
+                }
+            ]
+        }
+    except Exception as e:
+        run_history.append({
+            "type": "error",
+            "agent_id": agent_id,
+            "content": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        return {
+            "agent_findings": [
+                {
+                    "agent_id": agent_id,
+                    "domain": domain,
+                    "status": "failed",
+                    "confidence": "low",
+                    "findings": [],
+                    "summary": f"Agent failed: {str(e)}",
+                    "run_history": run_history,
+                }
+            ]
+        }
+
+
+# ---------------------------------------------------------------------------
+# Node: Synthesis — merges all agent findings
+# ---------------------------------------------------------------------------
+async def synthesis_node(state: GraphState) -> dict:
+    llm = _get_llm()
+
+    findings_text = ""
+    for finding in state.get("agent_findings", []):
+        findings_text += f"\n\n## {finding['domain']} ({finding['agent_id']})\n"
+        findings_text += f"Status: {finding['status']} | Confidence: {finding['confidence']}\n"
+        findings_text += f"{finding['summary']}\n"
+
+    prompt = SYNTHESIS_PROMPT.format(findings=findings_text)
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content=state["query"]),
+    ]
+
+    response = await llm.ainvoke(messages)
+    return {"synthesis": response.content}
+
+
+# ---------------------------------------------------------------------------
+# Conditional edge: fan-out to specialist agents in parallel
+# ---------------------------------------------------------------------------
+def route_to_agents(state: GraphState) -> list[Send]:
+    tasks = state.get("decomposed_tasks", [])
+    sends = []
+    for task in tasks:
+        agent_id = task.get("agent_id", "")
+        if agent_id in AGENT_TOOL_MAP:
+            sends.append(
+                Send(
+                    "specialist_agent",
+                    {
+                        **state,
+                        "decomposed_tasks": [task],
+                    },
+                )
+            )
+    if not sends:
+        sends.append(
+            Send(
+                "specialist_agent",
+                {
+                    **state,
+                    "decomposed_tasks": [
+                        {"agent_id": "market_trend_agent", "task": state["query"]}
+                    ],
+                },
+            )
+        )
+    return sends
+
+
+# ---------------------------------------------------------------------------
+# Build the LangGraph state graph
+# ---------------------------------------------------------------------------
+def build_graph():
+    graph = StateGraph(GraphState)
+
+    graph.add_node("orchestrator", orchestrator_node)
+    graph.add_node("specialist_agent", specialist_agent_node)
+    graph.add_node("synthesis", synthesis_node)
+
+    graph.add_edge(START, "orchestrator")
+    graph.add_conditional_edges("orchestrator", route_to_agents, ["specialist_agent"])
+    graph.add_edge("specialist_agent", "synthesis")
+    graph.add_edge("synthesis", END)
+
+    return graph.compile()
+
+
+# ---------------------------------------------------------------------------
+# Run agent with SSE event streaming
+# ---------------------------------------------------------------------------
+async def run_agent(query: str, conversation_history: list[dict] | None = None) -> AsyncGenerator[str, None]:
+    """Run the multi-agent graph and yield SSE event strings."""
+    graph = build_graph()
+
+    initial_state = {
+        "query": query,
+        "conversation_history": conversation_history or [],
+        "messages": [],
+        "decomposed_tasks": [],
+        "agent_findings": [],
+        "synthesis": "",
+    }
+
+    yield _sse_event("agent_status", {
+        "agent_id": "orchestrator",
+        "status": "spawned",
+        "message": "Analyzing query and planning research...",
+    })
+
+    try:
+        completed_agents: set[str] = set()
+        synthesis_result = ""
+        agent_findings_count = 0
+
+        async for chunk in graph.astream(initial_state, stream_mode="updates"):
+            for node_name, node_output in chunk.items():
+
+                # Orchestrator completed — emit decomposed tasks
+                if node_name == "orchestrator":
+                    tasks = node_output.get("decomposed_tasks", [])
+                    if tasks:
+                        yield _sse_event("agent_status", {
+                            "agent_id": "orchestrator",
+                            "status": "complete",
+                            "message": f"Dispatching {len(tasks)} specialist agents",
+                        })
+                        for task in tasks:
+                            agent_id = task.get("agent_id", "")
+                            domain = AGENT_DOMAINS.get(agent_id, "Research")
+                            yield _sse_event("agent_status", {
+                                "agent_id": agent_id,
+                                "status": "spawned",
+                                "message": f"Starting {domain} research...",
+                            })
+
+                # Specialist agent completed — stream run history + findings
+                if node_name == "specialist_agent":
+                    findings = node_output.get("agent_findings", [])
+                    for finding in findings:
+                        agent_id = finding.get("agent_id", "")
+                        completed_agents.add(agent_id)
+                        agent_findings_count += 1
+                        status = finding.get("status", "complete")
+                        domain = finding.get("domain", "")
+
+                        # Stream each run_history entry so the UI can show chain of thought
+                        run_history = finding.get("run_history", [])
+                        for entry in run_history:
+                            yield _sse_event("run_step", entry)
+
+                        yield _sse_event("agent_status", {
+                            "agent_id": agent_id,
+                            "status": status,
+                            "message": f"{domain} analysis complete",
+                        })
+                        yield _sse_event("finding", {
+                            "agent_id": agent_id,
+                            "domain": domain,
+                            "finding": finding.get("summary", "")[:500],
+                        })
+
+                # Synthesis completed
+                if node_name == "synthesis":
+                    synthesis_result = node_output.get("synthesis", "")
+                    if synthesis_result:
+                        yield _sse_event("agent_status", {
+                            "agent_id": "synthesis",
+                            "status": "complete",
+                            "message": "Intelligence brief ready",
+                        })
+
+        if synthesis_result:
             yield _sse_event("synthesis", {
-                "summary": final_content,
+                "summary": synthesis_result,
                 "confidence": "medium",
-                "sources_count": len(seen_tools),
+                "sources_count": agent_findings_count,
             })
         else:
-            yield _sse_event("error", {
-                "message": "Agent produced no output",
-            })
+            yield _sse_event("error", {"message": "No synthesis produced"})
 
     except Exception as e:
         yield _sse_event("agent_status", {
-            "agent_id": "research_agent",
+            "agent_id": "system",
             "status": "failed",
             "message": str(e),
         })
-        yield _sse_event("error", {
-            "message": f"Agent error: {str(e)}",
-        })
+        yield _sse_event("error", {"message": f"System error: {str(e)}"})
 
     yield _sse_event("done", {})
 

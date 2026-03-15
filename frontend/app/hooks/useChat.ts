@@ -14,6 +14,16 @@ export interface AgentStatus {
   message: string;
 }
 
+export interface RunStep {
+  type: "tool_call" | "tool_result" | "thought" | "error";
+  agent_id: string;
+  tool?: string;
+  input?: string;
+  output?: string;
+  content?: string;
+  timestamp: string;
+}
+
 interface SSEEvent {
   event: string;
   data: Record<string, unknown>;
@@ -25,6 +35,7 @@ export function useChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [agentStatuses, setAgentStatuses] = useState<AgentStatus[]>([]);
+  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
@@ -45,6 +56,7 @@ export function useChat() {
       setMessages((prev) => [...prev, userMessage]);
       setIsLoading(true);
       setAgentStatuses([]);
+      setRunSteps([]);
 
       abortRef.current = new AbortController();
 
@@ -114,8 +126,21 @@ export function useChat() {
                   break;
                 }
 
+                case "run_step": {
+                  const step: RunStep = {
+                    type: String(data.type ?? "thought") as RunStep["type"],
+                    agent_id: String(data.agent_id ?? ""),
+                    tool: data.tool ? String(data.tool) : undefined,
+                    input: data.input ? String(data.input) : undefined,
+                    output: data.output ? String(data.output) : undefined,
+                    content: data.content ? String(data.content) : undefined,
+                    timestamp: String(data.timestamp ?? ""),
+                  };
+                  setRunSteps((prev) => [...prev, step]);
+                  break;
+                }
+
                 case "finding":
-                  // Findings are intermediate - we could show them but we'll wait for synthesis
                   break;
 
                 case "synthesis":
@@ -142,7 +167,6 @@ export function useChat() {
 
                 case "done":
                   setIsLoading(false);
-                  setAgentStatuses([]);
                   break;
               }
             } catch {
@@ -169,5 +193,5 @@ export function useChat() {
     [messages, isLoading],
   );
 
-  return { messages, isLoading, agentStatuses, sendMessage };
+  return { messages, isLoading, agentStatuses, runSteps, sendMessage };
 }
